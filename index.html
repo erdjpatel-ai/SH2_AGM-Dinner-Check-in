@@ -14,41 +14,60 @@
   }
   header {
     background: linear-gradient(90deg, #ab185c, #4a1c5c);
-    padding: 14px 16px; text-align: center; border-bottom: 3px solid #f5c646;
+    padding: 12px 16px; text-align: center; border-bottom: 3px solid #f5c646;
   }
-  header h1 { font-size: 17px; letter-spacing: .5px; }
+  header h1 { font-size: 16px; letter-spacing: .5px; }
   header p { font-size: 12px; color: #f5c646; margin-top: 2px; }
 
   #scanWrap { position: relative; width: 100%; background: #000; }
   #video { width: 100%; display: block; }
   #frame {
     position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
-    width: 62%; aspect-ratio: 1; border: 3px solid rgba(245,198,70,.9);
-    border-radius: 18px; box-shadow: 0 0 0 2000px rgba(0,0,0,.35);
+    width: 60%; aspect-ratio: 1; border: 3px solid rgba(245,198,70,.9);
+    border-radius: 18px; box-shadow: 0 0 0 2000px rgba(0,0,0,.30);
   }
 
-  #result {
+  #panel {
     flex: 1; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; text-align: center; padding: 24px 18px;
-    transition: background .15s;
+    justify-content: center; text-align: center; padding: 20px 18px;
+    transition: background .15s; min-height: 230px;
   }
-  #result.idle   { background: #2a1438; }
-  #result.valid  { background: #146b3a; }
-  #result.used   { background: #b0182d; }
-  #result.bad    { background: #7a5a14; }
-  #icon { font-size: 64px; line-height: 1; }
-  #status { font-size: 30px; font-weight: 800; margin: 10px 0 6px; }
-  #detail { font-size: 17px; opacity: .95; line-height: 1.45; }
-  #hint { font-size: 13px; opacity: .7; margin-top: 14px; }
+  #panel.idle   { background: #2a1438; }
+  #panel.review { background: #243a66; }
+  #panel.valid  { background: #146b3a; }
+  #panel.used   { background: #b0182d; }
+  #panel.bad    { background: #7a5a14; }
 
-  .bar { display: flex; gap: 8px; padding: 12px; background: #1d0e28; }
+  #icon { font-size: 50px; line-height: 1; }
+  #status { font-size: 24px; font-weight: 800; margin: 8px 0; }
+
+  .card {
+    background: rgba(255,255,255,.12); border-radius: 14px;
+    padding: 14px 18px; margin: 8px 0 14px; width: 100%; max-width: 360px;
+  }
+  .card .row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 16px; }
+  .card .row .lbl { color: #f5c646; font-weight: 600; }
+  .card .row .val { font-weight: 700; text-align: right; }
+  .card .pid { font-size: 22px; font-weight: 800; letter-spacing: 1px; margin-top: 6px; }
+
+  .btns { display: flex; gap: 10px; width: 100%; max-width: 360px; }
+  .btns button {
+    flex: 1; padding: 15px; border: none; border-radius: 12px;
+    font-size: 17px; font-weight: 800; color: #fff;
+  }
+  #confirmBtn { background: #1aa35a; }
+  #cancelBtn  { background: #555; }
+  #detail { font-size: 16px; opacity: .95; line-height: 1.4; }
+  #hint { font-size: 13px; opacity: .7; margin-top: 12px; }
+
+  .bar { display: flex; gap: 8px; padding: 10px; background: #1d0e28; }
   .bar button {
-    flex: 1; padding: 13px; border: none; border-radius: 10px;
-    font-size: 15px; font-weight: 700; color: #fff; background: #4a1c5c;
+    flex: 1; padding: 12px; border: none; border-radius: 10px;
+    font-size: 14px; font-weight: 700; color: #fff; background: #4a1c5c;
   }
   .bar button.warn { background: #8a2a2a; }
   #count {
-    text-align: center; padding: 8px; font-size: 13px;
+    text-align: center; padding: 8px; font-size: 14px;
     background: #1d0e28; color: #f5c646; border-top: 1px solid #3a2148;
   }
 </style>
@@ -64,7 +83,7 @@
     <div id="frame"></div>
   </div>
 
-  <div id="result" class="idle">
+  <div id="panel" class="idle">
     <div id="icon">📷</div>
     <div id="status">Ready to scan</div>
     <div id="detail">Point the camera at a pass QR code</div>
@@ -74,25 +93,23 @@
   <div id="count">Checked in: <span id="num">0</span></div>
 
   <div class="bar">
-    <button onclick="manualEntry()">Enter ID manually</button>
+    <button onclick="manualEntry()">Manual ID</button>
     <button onclick="exportList()">Export list</button>
-    <button class="warn" onclick="resetEvent()">Reset event</button>
+    <button class="warn" onclick="resetEvent()">Reset</button>
   </div>
 
 <script>
 const KEY = "agm2026_checkin";
 const video = document.getElementById("video");
-const result = document.getElementById("result");
-const icon = document.getElementById("icon");
-const statusEl = document.getElementById("status");
-const detail = document.getElementById("detail");
+const panel = document.getElementById("panel");
 const numEl = document.getElementById("num");
 
 let canvas = document.createElement("canvas");
 let ctx = canvas.getContext("2d", { willReadFrequently: true });
-let lastCode = null, lastTime = 0, busy = false;
+let lastCode = null, lastTime = 0;
+let mode = "scanning";      // scanning | reviewing
+let pending = null;
 
-// ---- local store of used passes ----
 function load() {
   try { return JSON.parse(localStorage.getItem(KEY)) || {}; }
   catch { return {}; }
@@ -100,97 +117,133 @@ function load() {
 function save(d) { localStorage.setItem(KEY, JSON.stringify(d)); }
 function updateCount() { numEl.textContent = Object.keys(load()).length; }
 
-// QR payload format: "SH2-0001|B-204|Dilip Patel|..."  -> we key on the Pass ID (first field)
-function parseId(text) {
-  const id = (text.split("|")[0] || text).trim().toUpperCase();
-  return id;
-}
-function parseName(text) {
-  const parts = text.split("|");
-  return parts.length > 2 ? `${parts[1]} · ${parts[2]}` : "";
-}
-
-function show(kind, ic, st, dt) {
-  result.className = kind;
-  icon.textContent = ic;
-  statusEl.textContent = st;
-  detail.innerHTML = dt;
-  if (navigator.vibrate) navigator.vibrate(kind === "valid" ? 120 : [80,60,80]);
+// QR payload: "SH2-0001|B-204|Dilip Patel"
+function parse(text) {
+  const p = text.split("|").map(s => s.trim());
+  const id = (p[0] || text).trim().toUpperCase();
+  const flat = p[1] || "";
+  const name = p[2] || "";
+  return { id, flat, name };
 }
 
-function handle(text) {
-  const id = parseId(text);
-  if (!id) return;
+function buzz(pattern) { if (navigator.vibrate) navigator.vibrate(pattern); }
+
+function showIdle(msg) {
+  mode = "scanning"; pending = null;
+  panel.className = "idle";
+  panel.innerHTML = `<div id="icon">📷</div>
+    <div id="status">Ready to scan</div>
+    <div id="detail">${msg || "Point the camera at a pass QR code"}</div>
+    <div id="hint">Hold steady · good light helps</div>`;
+}
+
+function showReview(info) {
+  mode = "reviewing"; pending = info;
+  const store = load();
+  if (store[info.id]) {
+    panel.className = "used";
+    buzz([80,60,80]);
+    panel.innerHTML = `<div id="icon">✗</div>
+      <div id="status">ALREADY USED</div>
+      <div class="card">
+        <div class="row"><span class="lbl">Pass ID</span><span class="val">${info.id}</span></div>
+        <div class="row"><span class="lbl">Name</span><span class="val">${info.name||"—"}</span></div>
+        <div class="row"><span class="lbl">Flat</span><span class="val">${info.flat||"—"}</span></div>
+        <div class="pid">First scanned at ${store[info.id].time}</div>
+      </div>
+      <div class="btns"><button id="cancelBtn" onclick="showIdle()">OK, next</button></div>`;
+    return;
+  }
+  panel.className = "review";
+  buzz(60);
+  panel.innerHTML = `<div id="status">Confirm entry?</div>
+    <div class="card">
+      <div class="row"><span class="lbl">Name</span><span class="val">${info.name||"—"}</span></div>
+      <div class="row"><span class="lbl">Flat / Block</span><span class="val">${info.flat||"—"}</span></div>
+      <div class="pid">${info.id}</div>
+    </div>
+    <div class="btns">
+      <button id="cancelBtn" onclick="showIdle()">Cancel</button>
+      <button id="confirmBtn" onclick="confirmEntry()">✓ Confirm</button>
+    </div>`;
+}
+
+function confirmEntry() {
+  if (!pending) return;
   const store = load();
   const now = new Date();
   const tStr = now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  store[pending.id] = { time: tStr, name: pending.name, flat: pending.flat };
+  save(store);
+  updateCount();
+  buzz(120);
+  panel.className = "valid";
+  panel.innerHTML = `<div id="icon">✓</div>
+    <div id="status">CHECKED IN</div>
+    <div class="card">
+      <div class="row"><span class="lbl">Name</span><span class="val">${pending.name||"—"}</span></div>
+      <div class="row"><span class="lbl">Flat / Block</span><span class="val">${pending.flat||"—"}</span></div>
+      <div class="pid">${pending.id} · ${tStr}</div>
+    </div>`;
+  pending = null;
+  setTimeout(() => { if (panel.className === "valid") showIdle(); }, 2200);
+}
 
-  if (store[id]) {
-    show("used", "✗", "ALREADY USED",
-      `<b>${id}</b><br>${parseName(text) || ""}<br><span style="font-size:14px">First scanned at ${store[id].time}</span>`);
-  } else {
-    store[id] = { time: tStr, name: parseName(text) };
-    save(store);
-    updateCount();
-    show("valid", "✓", "CHECKED IN",
-      `<b>${id}</b><br>${parseName(text) || ""}<br><span style="font-size:14px">${tStr}</span>`);
-  }
-  setTimeout(() => {
-    if (!busy) show("idle", "📷", "Ready to scan", "Point the camera at a pass QR code");
-  }, 2600);
+function handle(text) {
+  if (mode === "reviewing") return;
+  const info = parse(text);
+  if (!info.id) return;
+  showReview(info);
 }
 
 function manualEntry() {
-  const v = prompt("Enter Pass ID (e.g. SH2-0001):");
+  const v = prompt("Enter pass text (PassID|Flat|Name) or just Pass ID:");
   if (v) handle(v.trim());
 }
 
 function resetEvent() {
-  if (confirm("Clear ALL check-ins for the event? This cannot be undone.")) {
-    localStorage.removeItem(KEY);
-    updateCount();
-    show("idle", "📷", "Ready to scan", "List cleared");
+  if (confirm("Clear ALL check-ins? This cannot be undone.")) {
+    localStorage.removeItem(KEY); updateCount(); showIdle("List cleared");
   }
 }
 
 function exportList() {
   const store = load();
   const ids = Object.keys(store);
-  if (ids.length === 0) { alert("No check-ins yet."); return; }
-  let csv = "Pass ID,Name/Flat,Checked-in Time\n";
+  if (!ids.length) { alert("No check-ins yet."); return; }
+  let csv = "Pass ID,Name,Flat/Block,Time\n";
   ids.sort().forEach(id => {
     const r = store[id];
-    const nm = (r.name || "").replace(/"/g, '""');
-    csv += `"${id}","${nm}","${r.time || ""}"\n`;
+    csv += `"${id}","${(r.name||'').replace(/"/g,'""')}","${(r.flat||'')}","${r.time||''}"\n`;
   });
   const blob = new Blob([csv], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url;
-  a.download = "AGM2026_checkins.csv";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+  a.href = url; a.download = "AGM2026_checkins.csv";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
 
-// ---- camera + scan loop ----
 async function startCamera() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "environment" }, audio: false
     });
     video.srcObject = stream;
+    video.setAttribute("playsinline", true);
     await video.play();
     requestAnimationFrame(scan);
   } catch (e) {
-    show("bad", "⚠️", "Camera blocked",
-      "Allow camera access in your browser, then reload this page.");
+    panel.className = "bad";
+    panel.innerHTML = `<div id="icon">⚠️</div>
+      <div id="status">Camera blocked</div>
+      <div id="detail">Allow camera for this site, then reload.<br>
+      iPhone: Settings → Chrome → Camera → On</div>`;
   }
 }
 
 function scan() {
-  if (video.readyState === video.HAVE_ENOUGH_DATA) {
+  if (mode === "scanning" && video.readyState === video.HAVE_ENOUGH_DATA) {
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -198,12 +251,9 @@ function scan() {
     const code = jsQR(img.data, img.width, img.height, { inversionAttempts: "dontInvert" });
     if (code && code.data) {
       const t = Date.now();
-      // debounce: ignore same code re-read within 3s
-      if (code.data !== lastCode || t - lastTime > 3000) {
+      if (code.data !== lastCode || t - lastTime > 4000) {
         lastCode = code.data; lastTime = t;
-        busy = true;
         handle(code.data);
-        setTimeout(() => { busy = false; }, 2600);
       }
     }
   }
@@ -211,6 +261,7 @@ function scan() {
 }
 
 updateCount();
+showIdle();
 startCamera();
 </script>
 </body>
