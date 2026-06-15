@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AGM 2026 — Gate Check-In</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #2a1438; color: #fff; min-height: 100vh; display: flex; flex-direction: column;
+  }
+  header {
+    background: linear-gradient(90deg, #ab185c, #4a1c5c);
+    padding: 12px 16px; text-align: center; border-bottom: 3px solid #f5c646;
+  }
+  header h1 { font-size: 16px; letter-spacing: .5px; }
+  header p { font-size: 12px; color: #f5c646; margin-top: 2px; }
+
+  #reader { width: 100%; max-height: 44vh; overflow: hidden; background:#000; }
+  #reader video { width: 100% !important; }
+
+  #panel {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; text-align: center; padding: 16px 18px; min-height: 170px;
+    transition: background .15s;
+  }
+  #panel.idle   { background: #2a1438; }
+  #panel.review { background: #243a66; }
+  #panel.valid  { background: #146b3a; }
+  #panel.used   { background: #b0182d; }
+  #icon { font-size: 46px; } #status { font-size: 23px; font-weight: 800; margin: 6px 0; }
+  #detail { font-size: 15px; opacity: .9; }
+  .card { background: rgba(255,255,255,.12); border-radius: 14px; padding: 12px 18px;
+          margin: 8px 0 12px; width: 100%; max-width: 360px; }
+  .card .row { display:flex; justify-content:space-between; padding:5px 0; font-size:16px; }
+  .card .lbl { color:#f5c646; font-weight:600; } .card .val { font-weight:700; }
+  .card .pid { font-size:21px; font-weight:800; margin-top:6px; letter-spacing:1px; }
+  .btns { display:flex; gap:10px; width:100%; max-width:360px; }
+  .btns button { flex:1; padding:14px; border:none; border-radius:12px; font-size:16px; font-weight:800; color:#fff; }
+  #confirmBtn { background:#1aa35a; } #cancelBtn { background:#555; }
+
+  .bar { display:flex; gap:8px; padding:10px; background:#1d0e28; }
+  .bar button { flex:1; padding:12px; border:none; border-radius:10px; font-size:14px; font-weight:700; color:#fff; background:#4a1c5c; }
+  .bar button.warn { background:#8a2a2a; }
+  #count { text-align:center; padding:8px; font-size:14px; background:#1d0e28; color:#f5c646; border-top:1px solid #3a2148; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>SILVER HARMONY 2 — AGM 2026</h1>
+    <p>Dinner Gate Check-In · 21 June</p>
+  </header>
+
+  <div id="reader"></div>
+
+  <div id="panel" class="idle">
+    <div id="icon">📷</div>
+    <div id="status">Ready to scan</div>
+    <div id="detail">Point the camera at a pass QR code</div>
+  </div>
+
+  <div id="count">Checked in: <span id="num">0</span></div>
+
+  <div class="bar">
+    <button onclick="manualEntry()">Manual ID</button>
+    <button onclick="exportList()">Export list</button>
+    <button class="warn" onclick="resetEvent()">Reset</button>
+  </div>
+
+<script>
+const KEY = "agm2026_checkin";
+const panel = document.getElementById("panel");
+const numEl = document.getElementById("num");
+let mode = "scanning", pending = null;
+
+function load(){ try { return JSON.parse(localStorage.getItem(KEY))||{}; } catch { return {}; } }
+function save(d){ localStorage.setItem(KEY, JSON.stringify(d)); }
+function updateCount(){ numEl.textContent = Object.keys(load()).length; }
+
+function parse(text){
+  const p = text.split("|").map(s=>s.trim());
+  return { id:(p[0]||text).trim().toUpperCase(), flat:p[1]||"", name:p[2]||"" };
+}
+function buzz(p){ if(navigator.vibrate) navigator.vibrate(p); }
+
+function showIdle(msg){
+  mode="scanning"; pending=null; panel.className="idle";
+  panel.innerHTML = `<div id="icon">📷</div><div id="status">Ready to scan</div>
+    <div id="detail">${msg||"Point the camera at a pass QR code"}</div>`;
+}
+function showReview(info){
+  mode="reviewing"; pending=info;
+  const store=load();
+  if(store[info.id]){
+    panel.className="used"; buzz([80,60,80]);
+    panel.innerHTML = `<div id="icon">✗</div><div id="status">ALREADY USED</div>
+      <div class="card"><div class="row"><span class="lbl">Pass</span><span class="val">${info.id}</span></div>
+      <div class="row"><span class="lbl">Name</span><span class="val">${info.name||"—"}</span></div>
+      <div class="row"><span class="lbl">Flat</span><span class="val">${info.flat||"—"}</span></div>
+      <div class="pid">First scanned ${store[info.id].time}</div></div>
+      <div class="btns"><button id="cancelBtn" onclick="showIdle()">OK, next</button></div>`;
+    return;
+  }
+  panel.className="review"; buzz(60);
+  panel.innerHTML = `<div id="status">Confirm entry?</div>
+    <div class="card"><div class="row"><span class="lbl">Name</span><span class="val">${info.name||"—"}</span></div>
+    <div class="row"><span class="lbl">Flat/Block</span><span class="val">${info.flat||"—"}</span></div>
+    <div class="pid">${info.id}</div></div>
+    <div class="btns"><button id="cancelBtn" onclick="showIdle()">Cancel</button>
+    <button id="confirmBtn" onclick="confirmEntry()">✓ Confirm</button></div>`;
+}
+function confirmEntry(){
+  if(!pending) return;
+  const store=load();
+  const t=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+  store[pending.id]={time:t,name:pending.name,flat:pending.flat};
+  save(store); updateCount(); buzz(120);
+  panel.className="valid";
+  panel.innerHTML = `<div id="icon">✓</div><div id="status">CHECKED IN</div>
+    <div class="card"><div class="row"><span class="lbl">Name</span><span class="val">${pending.name||"—"}</span></div>
+    <div class="row"><span class="lbl">Flat/Block</span><span class="val">${pending.flat||"—"}</span></div>
+    <div class="pid">${pending.id} · ${t}</div></div>`;
+  pending=null;
+  setTimeout(()=>{ if(panel.className==="valid") showIdle(); }, 2200);
+}
+function handle(text){
+  if(mode==="reviewing") return;
+  const info=parse(text); if(!info.id) return;
+  showReview(info);
+}
+function manualEntry(){
+  const v=prompt("Enter pass text (PassID|Flat|Name) or just Pass ID:");
+  if(v) handle(v.trim());
+}
+function resetEvent(){
+  if(confirm("Clear ALL check-ins? Cannot be undone.")){ localStorage.removeItem(KEY); updateCount(); showIdle("List cleared"); }
+}
+function exportList(){
+  const store=load(), ids=Object.keys(store);
+  if(!ids.length){ alert("No check-ins yet."); return; }
+  let csv="Pass ID,Name,Flat/Block,Time\n";
+  ids.sort().forEach(id=>{ const r=store[id]; csv+=`"${id}","${(r.name||'').replace(/"/g,'""')}","${r.flat||''}","${r.time||''}"\n`; });
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+  a.download="AGM2026_checkins.csv"; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+// ---- start scanner (html5-qrcode handles iOS quirks) ----
+function onScanSuccess(decodedText){ handle(decodedText); }
+function onScanFailure(){ /* ignore per-frame misses */ }
+
+window.addEventListener("load", function(){
+  updateCount(); showIdle();
+  const qr = new Html5Qrcode("reader");
+  qr.start(
+    { facingMode: "environment" },
+    { fps: 10, qrbox: { width: 230, height: 230 } },
+    onScanSuccess, onScanFailure
+  ).catch(err=>{
+    panel.className="used";
+    panel.innerHTML = `<div id="icon">⚠️</div><div id="status">Camera error</div>
+      <div id="detail">${err}<br>Allow camera in browser settings & reload.<br>
+      You can still use <b>Manual ID</b>.</div>`;
+  });
+});
+</script>
+</body>
+</html>
