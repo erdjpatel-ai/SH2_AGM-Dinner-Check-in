@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AGM 2026 Check-In</title>
+<style>
+  body { font-family: -apple-system, Roboto, sans-serif; background:#2a1438; color:#fff; margin:0; }
+  header { background:#ab185c; padding:12px; text-align:center; border-bottom:3px solid #f5c646; }
+  header h1 { font-size:16px; margin:0; }
+  #reader { width:100%; }
+  #result { padding:22px 16px; text-align:center; min-height:120px; }
+  #result.valid { background:#146b3a; } #result.used { background:#b0182d; }
+  #result .big { font-size:24px; font-weight:800; margin:8px 0; }
+  #result .info { font-size:18px; }
+  #count { text-align:center; padding:10px; background:#1d0e28; color:#f5c646; font-weight:700; }
+  .bar { display:flex; gap:8px; padding:10px; background:#1d0e28; }
+  .bar button { flex:1; padding:13px; border:none; border-radius:10px; font-weight:700; color:#fff; background:#4a1c5c; font-size:14px; }
+  .bar button.warn { background:#8a2a2a; }
+</style>
+</head>
+<body>
+  <header><h1>SILVER HARMONY 2 — AGM 2026 Check-In</h1></header>
+  <div id="reader"></div>
+  <div id="count">Checked in: <span id="num">0</span></div>
+  <div id="result">Point camera at a pass QR code</div>
+  <div class="bar">
+    <button onclick="manualEntry()">Manual ID</button>
+    <button onclick="exportList()">Export</button>
+    <button class="warn" onclick="resetEvent()">Reset</button>
+  </div>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script>
+    var KEY="agm2026";
+    function load(){ try{return JSON.parse(localStorage.getItem(KEY))||{};}catch(e){return {};} }
+    function save(d){ localStorage.setItem(KEY, JSON.stringify(d)); }
+    function count(){ document.getElementById("num").textContent = Object.keys(load()).length; }
+    var result = document.getElementById("result");
+    var lastText="", lastT=0;
+
+    function handle(text){
+      var p = text.split("|");
+      var id = (p[0]||text).trim().toUpperCase();
+      var flat = p[1]||"", name = p[2]||"";
+      var store = load();
+      if(store[id]){
+        result.className="used";
+        result.innerHTML = '<div class="big">✗ ALREADY USED</div><div class="info">'+id+' — '+name+'<br>first in at '+store[id].time+'</div>';
+        if(navigator.vibrate) navigator.vibrate([80,60,80]);
+        return;
+      }
+      var t = new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+      store[id] = {time:t, name:name, flat:flat};
+      save(store); count();
+      result.className="valid";
+      result.innerHTML = '<div class="big">✓ CHECKED IN</div><div class="info">'+id+'<br>'+name+' · '+flat+'<br>'+t+'</div>';
+      if(navigator.vibrate) navigator.vibrate(120);
+    }
+
+    function onScan(text){
+      var now = Date.now();
+      if(text===lastText && now-lastT < 4000) return;
+      lastText=text; lastT=now;
+      handle(text);
+    }
+
+    function manualEntry(){
+      var v = prompt("Enter pass text (PassNo.1|B-201|Name) or just the number:");
+      if(v) handle(v.trim());
+    }
+    function resetEvent(){
+      if(confirm("Clear all check-ins?")){ localStorage.removeItem(KEY); count(); result.className=""; result.textContent="List cleared"; }
+    }
+    function exportList(){
+      var s = load(), ids = Object.keys(s);
+      if(!ids.length){ alert("No check-ins yet."); return; }
+      var csv = "Pass,Name,Flat,Time\n";
+      ids.forEach(function(id){ var r=s[id]; csv += '"'+id+'","'+(r.name||'')+'","'+(r.flat||'')+'","'+(r.time||'')+'"\n'; });
+      var a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([csv],{type:"text/csv"}));
+      a.download = "AGM2026_checkins.csv"; a.click();
+    }
+
+    count();
+    window.onload = function(){
+      var h = new Html5Qrcode("reader");
+      h.start({facingMode:"environment"}, {fps:10, qrbox:240}, onScan, function(){})
+       .catch(function(e){ result.innerHTML = "Camera error: "+e+"<br>Use Manual ID button below."; });
+    };
+  </script>
+</body>
+</html>
