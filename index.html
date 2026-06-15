@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AGM 2026 — Gate Check-In</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #2a1438; color: #fff; min-height: 100vh;
+    display: flex; flex-direction: column;
+  }
+  header {
+    background: linear-gradient(90deg, #ab185c, #4a1c5c);
+    padding: 12px 16px; text-align: center; border-bottom: 3px solid #f5c646;
+  }
+  header h1 { font-size: 16px; letter-spacing: .5px; }
+  header p { font-size: 12px; color: #f5c646; margin-top: 2px; }
+
+  #scanWrap {
+    position: relative; width: 100%; background: #000;
+    max-height: 46vh; overflow: hidden; display: flex; justify-content: center;
+  }
+  #video { width: 100%; max-height: 46vh; object-fit: contain; display: block; }
+  #frame {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 55%; aspect-ratio: 1; border: 3px solid rgba(245,198,70,.9);
+    border-radius: 18px; box-shadow: 0 0 0 2000px rgba(0,0,0,.30);
+  }
+
+  #panel {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; text-align: center; padding: 16px 18px;
+    transition: background .15s; min-height: 180px;
+  }
+  #panel.idle   { background: #2a1438; }
+  #panel.review { background: #243a66; }
+  #panel.valid  { background: #146b3a; }
+  #panel.used   { background: #b0182d; }
+  #panel.bad    { background: #7a5a14; }
+
+  #icon { font-size: 50px; line-height: 1; }
+  #status { font-size: 24px; font-weight: 800; margin: 8px 0; }
+
+  .card {
+    background: rgba(255,255,255,.12); border-radius: 14px;
+    padding: 14px 18px; margin: 8px 0 14px; width: 100%; max-width: 360px;
+  }
+  .card .row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 16px; }
+  .card .row .lbl { color: #f5c646; font-weight: 600; }
+  .card .row .val { font-weight: 700; text-align: right; }
+  .card .pid { font-size: 22px; font-weight: 800; letter-spacing: 1px; margin-top: 6px; }
+
+  .btns { display: flex; gap: 10px; width: 100%; max-width: 360px; }
+  .btns button {
+    flex: 1; padding: 15px; border: none; border-radius: 12px;
+    font-size: 17px; font-weight: 800; color: #fff;
+  }
+  #confirmBtn { background: #1aa35a; }
+  #cancelBtn  { background: #555; }
+  #detail { font-size: 16px; opacity: .95; line-height: 1.4; }
+  #hint { font-size: 13px; opacity: .7; margin-top: 12px; }
+
+  .bar { display: flex; gap: 8px; padding: 10px; background: #1d0e28; }
+  .bar button {
+    flex: 1; padding: 12px; border: none; border-radius: 10px;
+    font-size: 14px; font-weight: 700; color: #fff; background: #4a1c5c;
+  }
+  .bar button.warn { background: #8a2a2a; }
+  #count {
+    text-align: center; padding: 8px; font-size: 14px;
+    background: #1d0e28; color: #f5c646; border-top: 1px solid #3a2148;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <h1>SILVER HARMONY 2 — AGM 2026</h1>
+    <p>Dinner Gate Check-In · 21 June</p>
+    <p id="dbg" style="font-size:11px;color:#9fd;opacity:.85;margin-top:2px">starting…</p>
+  </header>
+
+  <div id="scanWrap">
+    <video id="video" playsinline></video>
+    <div id="frame"></div>
+  </div>
+
+  <div id="panel" class="idle">
+    <div id="icon">📷</div>
+    <div id="status">Ready to scan</div>
+    <div id="detail">Point the camera at a pass QR code</div>
+    <div id="hint">Hold steady · good light helps</div>
+  </div>
+
+  <div id="count">Checked in: <span id="num">0</span></div>
+
+  <div class="bar">
+    <button onclick="manualEntry()">Manual ID</button>
+    <button onclick="exportList()">Export list</button>
+    <button class="warn" onclick="resetEvent()">Reset</button>
+  </div>
+
+<script>
+const KEY = "agm2026_checkin";
+const video = document.getElementById("video");
+const panel = document.getElementById("panel");
+const numEl = document.getElementById("num");
+
+let canvas = document.createElement("canvas");
+let ctx = canvas.getContext("2d", { willReadFrequently: true });
+let lastCode = null, lastTime = 0;
+let mode = "scanning";      // scanning | reviewing
+let pending = null;
+
+function load() {
+  try { return JSON.parse(localStorage.getItem(KEY)) || {}; }
+  catch { return {}; }
+}
+function save(d) { localStorage.setItem(KEY, JSON.stringify(d)); }
+function updateCount() { numEl.textContent = Object.keys(load()).length; }
+
+// QR payload: "SH2-0001|B-204|Dilip Patel"
+function parse(text) {
+  const p = text.split("|").map(s => s.trim());
+  const id = (p[0] || text).trim().toUpperCase();
+  const flat = p[1] || "";
+  const name = p[2] || "";
+  return { id, flat, name };
+}
+
+function buzz(pattern) { if (navigator.vibrate) navigator.vibrate(pattern); }
+
+function showIdle(msg) {
+  mode = "scanning"; pending = null;
+  panel.className = "idle";
+  panel.innerHTML = `<div id="icon">📷</div>
+    <div id="status">Ready to scan</div>
+    <div id="detail">${msg || "Point the camera at a pass QR code"}</div>
+    <div id="hint">Hold steady · good light helps</div>`;
+}
+
+function showReview(info) {
+  mode = "reviewing"; pending = info;
+  const store = load();
+  if (store[info.id]) {
+    panel.className = "used";
+    buzz([80,60,80]);
+    panel.innerHTML = `<div id="icon">✗</div>
+      <div id="status">ALREADY USED</div>
+      <div class="card">
+        <div class="row"><span class="lbl">Pass ID</span><span class="val">${info.id}</span></div>
+        <div class="row"><span class="lbl">Name</span><span class="val">${info.name||"—"}</span></div>
+        <div class="row"><span class="lbl">Flat</span><span class="val">${info.flat||"—"}</span></div>
+        <div class="pid">First scanned at ${store[info.id].time}</div>
+      </div>
+      <div class="btns"><button id="cancelBtn" onclick="showIdle()">OK, next</button></div>`;
+    return;
+  }
+  panel.className = "review";
+  buzz(60);
+  panel.innerHTML = `<div id="status">Confirm entry?</div>
+    <div class="card">
+      <div class="row"><span class="lbl">Name</span><span class="val">${info.name||"—"}</span></div>
+      <div class="row"><span class="lbl">Flat / Block</span><span class="val">${info.flat||"—"}</span></div>
+      <div class="pid">${info.id}</div>
+    </div>
+    <div class="btns">
+      <button id="cancelBtn" onclick="showIdle()">Cancel</button>
+      <button id="confirmBtn" onclick="confirmEntry()">✓ Confirm</button>
+    </div>`;
+}
+
+function confirmEntry() {
+  if (!pending) return;
+  const store = load();
+  const now = new Date();
+  const tStr = now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  store[pending.id] = { time: tStr, name: pending.name, flat: pending.flat };
+  save(store);
+  updateCount();
+  buzz(120);
+  panel.className = "valid";
+  panel.innerHTML = `<div id="icon">✓</div>
+    <div id="status">CHECKED IN</div>
+    <div class="card">
+      <div class="row"><span class="lbl">Name</span><span class="val">${pending.name||"—"}</span></div>
+      <div class="row"><span class="lbl">Flat / Block</span><span class="val">${pending.flat||"—"}</span></div>
+      <div class="pid">${pending.id} · ${tStr}</div>
+    </div>`;
+  pending = null;
+  setTimeout(() => { if (panel.className === "valid") showIdle(); }, 2200);
+}
+
+function handle(text) {
+  if (mode === "reviewing") return;
+  const info = parse(text);
+  if (!info.id) return;
+  showReview(info);
+}
+
+function manualEntry() {
+  const v = prompt("Enter pass text (PassID|Flat|Name) or just Pass ID:");
+  if (v) handle(v.trim());
+}
+
+function resetEvent() {
+  if (confirm("Clear ALL check-ins? This cannot be undone.")) {
+    localStorage.removeItem(KEY); updateCount(); showIdle("List cleared");
+  }
+}
+
+function exportList() {
+  const store = load();
+  const ids = Object.keys(store);
+  if (!ids.length) { alert("No check-ins yet."); return; }
+  let csv = "Pass ID,Name,Flat/Block,Time\n";
+  ids.sort().forEach(id => {
+    const r = store[id];
+    csv += `"${id}","${(r.name||'').replace(/"/g,'""')}","${(r.flat||'')}","${r.time||''}"\n`;
+  });
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "AGM2026_checkins.csv";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function startCamera() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    video.setAttribute("playsinline", true);
+    video.setAttribute("muted", true);
+    video.muted = true;
+    await video.play();
+    requestAnimationFrame(scan);
+  } catch (e) {
+    panel.className = "bad";
+    panel.innerHTML = `<div id="icon">⚠️</div>
+      <div id="status">Camera blocked</div>
+      <div id="detail">Allow camera for this site, then reload.<br>
+      iPhone: Settings → Chrome → Camera → On<br><small>${e.name||e}</small></div>`;
+  }
+}
+
+let frameCount = 0;
+const dbg = document.getElementById("dbg");
+
+function scan() {
+  if (mode === "scanning" && video.videoWidth > 0) {
+    // downscale for reliable, fast reads on mobile
+    const maxW = 640;
+    const scale = Math.min(1, maxW / video.videoWidth);
+    const w = Math.round(video.videoWidth * scale);
+    const h = Math.round(video.videoHeight * scale);
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    let img;
+    try { img = ctx.getImageData(0, 0, w, h); }
+    catch (err) { if (dbg) dbg.textContent = "read error"; requestAnimationFrame(scan); return; }
+
+    frameCount++;
+    // sample a center pixel to confirm we're getting real (non-blank) frames
+    const ci = ((h>>1)*w + (w>>1)) * 4;
+    const bright = img.data[ci] + img.data[ci+1] + img.data[ci+2];
+    if (dbg) dbg.textContent = `scanning ${w}×${h} · f${frameCount} · px${bright}`;
+
+    const code = jsQR(img.data, img.width, img.height, { inversionAttempts: "attemptBoth" });
+    if (code && code.data) {
+      if (dbg) dbg.textContent = "QR FOUND";
+      const t = Date.now();
+      if (code.data !== lastCode || t - lastTime > 4000) {
+        lastCode = code.data; lastTime = t;
+        handle(code.data);
+      }
+    }
+  }
+  requestAnimationFrame(scan);
+}
+
+updateCount();
+showIdle();
+startCamera();
+</script>
+</body>
+</html>
